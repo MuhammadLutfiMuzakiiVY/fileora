@@ -1,7 +1,9 @@
-"""Build seluruh artefak rilis Fileora:
-1. Fileora-1.0.0-Setup.exe     (Windows Installer .exe - Wajib)
+"""Build seluruh artefak rilis Fileora + Authenticode Digital Signature:
+Publisher: Muhammad Lutfi Muzaki & Attarashi Tomoddachi
+
+1. Fileora-1.0.0-Setup.exe     (Windows Installer .exe dengan Embedded Resource & Authenticode - Wajib)
 2. Fileora-1.0.0-Portable.zip  (Portable .zip tanpa instalasi - Wajib)
-3. Fileora-1.0.0-Setup.msi     (Windows Installer Package .msi - Disarankan)
+3. Fileora-1.0.0-Setup.msi     (Windows Installer Package .msi dengan Authenticode - Disarankan)
 4. Fileora-1.0.0-Portable.7z   (Portable archive .7z ukuran lebih kecil - Opsional)
 5. Fileora-1.0.0.sha256        (Verifikasi integritas file - Wajib)
 6. Fileora-1.0.0.sig           (Verifikasi tanda tangan digital RSA-SHA256 - Opsional)
@@ -12,7 +14,6 @@ import datetime
 import gzip
 import hashlib
 import json
-import os
 import subprocess
 import zipfile
 from pathlib import Path
@@ -26,7 +27,9 @@ from cryptography.x509.oid import NameOID
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 VER = "1.0.0"
-PUBLISHER = "Muhammad Lutfi Muzaki"
+PUBLISHER = "Muhammad Lutfi Muzaki & Attarashi Tomoddachi"
+PUBLISHER_XML = "Muhammad Lutfi Muzaki &amp; Attarashi Tomoddachi"
+ORG = "Attarashi Tomoddachi"
 APP_EXE = DIST / "Fileora.exe"
 
 SETUP_EXE = DIST / f"Fileora-{VER}-Setup.exe"
@@ -37,6 +40,7 @@ SHA256_FILE = DIST / f"Fileora-{VER}.sha256"
 SIG_FILE = DIST / f"Fileora-{VER}.sig"
 BLOCKMAP_FILE = DIST / f"Fileora-{VER}.blockmap"
 PUBKEY_FILE = DIST / "Fileora-PublicKey.pem"
+TRUST_BAT = DIST / "Pasang-Sertifikat-Publisher.bat"
 
 
 def sha256_hex(path: Path) -> str:
@@ -47,54 +51,68 @@ def sha256_hex(path: Path) -> str:
     return h.hexdigest()
 
 
-def build_portable_zip() -> None:
-    print("[1/7] Membuat Portable .zip:", PORTABLE_ZIP.name)
-    PORTABLE_ZIP.unlink(missing_ok=True)
-    with zipfile.ZipFile(PORTABLE_ZIP, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        zf.write(APP_EXE, "Fileora-Portable/Fileora.exe")
-        zf.write(ROOT / "README.md", "Fileora-Portable/README.md")
-        zf.write(ROOT / "assets" / "fileora.ico", "Fileora-Portable/fileora.ico")
-        zf.writestr("Fileora-Portable/PORTABLE.txt",
-                    f"Fileora v{VER} (Portable Edition)\nPublisher: {PUBLISHER}\n\n"
-                    "Cara pakai: Jalankan langsung Fileora.exe tanpa perlu instalasi.\n")
+def authenticode_sign(*targets: Path) -> None:
+    """Tandatangani file .exe / .msi menggunakan sertifikat Windows Authenticode Publisher."""
+    paths_str = ", ".join(f"'{p.resolve()}'" for p in targets)
+    ps = f"""
+    $cert = Get-ChildItem Cert:\\CurrentUser\\My -CodeSigningCert |
+            Where-Object {{ $_.Subject -like '*Muhammad Lutfi Muzaki*' -and $_.Subject -like '*Attarashi Tomoddachi*' }} |
+            Select-Object -First 1
+    if (-not $cert) {{
+        $cert = New-SelfSignedCertificate -Type CodeSigningCert `
+            -Subject 'CN=Muhammad Lutfi Muzaki & Attarashi Tomoddachi, O=Attarashi Tomoddachi, C=ID' `
+            -FriendlyName 'Muhammad Lutfi Muzaki & Attarashi Tomoddachi Code Signing' `
+            -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 `
+            -CertStoreLocation 'Cert:\\CurrentUser\\My' -NotAfter (Get-Date).AddYears(10)
+    }}
+    Export-Certificate -Cert $cert -FilePath '{(DIST / "Fileora-Publisher.cer").resolve()}' -Force | Out-Null
+    Import-Certificate -FilePath '{(DIST / "Fileora-Publisher.cer").resolve()}' -CertStoreLocation 'Cert:\\CurrentUser\\TrustedPublisher' | Out-Null
+    foreach ($f in @({paths_str})) {{
+        $res = Set-AuthenticodeSignature -FilePath $f -Certificate $cert -HashAlgorithm SHA256
+        Write-Host "Authenticode Signed:" (Split-Path $f -Leaf) "->" $res.Status "Signer:" $res.SignerCertificate.Subject
+    }}
+    """
+    subprocess.run(["pwsh", "-NoProfile", "-Command", ps], check=True)
 
 
-def build_portable_7z() -> None:
-    print("[2/7] Membuat Portable .7z:", PORTABLE_7Z.name)
-    PORTABLE_7Z.unlink(missing_ok=True)
-    with py7zr.SevenZipFile(PORTABLE_7Z, "w") as archive:
-        archive.write(APP_EXE, "Fileora-Portable/Fileora.exe")
-        archive.write(ROOT / "README.md", "Fileora-Portable/README.md")
-        archive.write(ROOT / "assets" / "fileora.ico", "Fileora-Portable/fileora.ico")
+def write_trust_helper() -> None:
+    TRUST_BAT.write_text(
+        "@echo off\r\n"
+        "title Pasang Sertifikat Publisher — Muhammad Lutfi Muzaki ^& Attarashi Tomoddachi\r\n"
+        "echo Memasang sertifikat Publisher resmi untuk Fileora...\r\n"
+        "certutil -user -addstore Root \"%~dp0Fileora-Publisher.cer\"\r\n"
+        "certutil -user -addstore TrustedPublisher \"%~dp0Fileora-Publisher.cer\"\r\n"
+        "powershell -NoProfile -Command \"Get-ChildItem '%~dp0*' | Unblock-File -ErrorAction SilentlyContinue\"\r\n"
+        "echo.\r\n"
+        "echo Selesai! Sertifikat Publisher 'Muhammad Lutfi Muzaki & Attarashi Tomoddachi' telah terpasang.\r\n"
+        "pause\r\n",
+        encoding="utf-8",
+    )
 
 
 def build_setup_exe() -> None:
-    """Kompilasi installer GUI Windows mandiri (.exe) yang mengekstrak payload, membuat shortcut & uninstaller."""
-    print("[3/7] Membuat Windows Installer .exe:", SETUP_EXE.name)
+    """Kompilasi installer GUI Windows (.exe) dengan payload embedded resource agar Authenticode Signature 100% valid."""
+    print("[1/7] Membuat Windows Installer .exe:", SETUP_EXE.name)
     SETUP_EXE.unlink(missing_ok=True)
     cs_code = r"""
 using System;
 using System.Diagnostics;
-using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Fileora Setup")]
-[assembly: AssemblyDescription("Fileora Windows Installer")]
-[assembly: AssemblyCompany("Muhammad Lutfi Muzaki")]
+[assembly: AssemblyDescription("Fileora Windows Installer — Muhammad Lutfi Muzaki & Attarashi Tomoddachi")]
+[assembly: AssemblyCompany("Muhammad Lutfi Muzaki & Attarashi Tomoddachi")]
 [assembly: AssemblyProduct("Fileora")]
-[assembly: AssemblyCopyright("Copyright (C) 2026 Muhammad Lutfi Muzaki")]
+[assembly: AssemblyCopyright("Copyright (C) 2026 Muhammad Lutfi Muzaki & Attarashi Tomoddachi")]
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 
 namespace FileoraSetup {
     static class Program {
-        const string MAGIC = "FILEORA_PAYLOAD_V1";
-
         [STAThread]
         static int Main(string[] args) {
             Application.EnableVisualStyles();
@@ -119,17 +137,17 @@ namespace FileoraSetup {
             if (!silent) {
                 var res = MessageBox.Show(
                     "Pasang Fileora v1.0.0 ke komputer Anda?\n\n" +
-                    "Publisher: Muhammad Lutfi Muzaki\n" +
+                    "Publisher: Muhammad Lutfi Muzaki & Attarashi Tomoddachi\n" +
                     "Lokasi: " + targetDir + "\n\n" +
                     "Klik Yes untuk menginstal dan membuat pintasan di Desktop & Start Menu.",
-                    "Fileora v1.0.0 Setup — Muhammad Lutfi Muzaki",
+                    "Fileora v1.0.0 Setup — Muhammad Lutfi Muzaki & Attarashi Tomoddachi",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (res != DialogResult.Yes) return 0;
             }
 
             try {
                 Directory.CreateDirectory(targetDir);
-                ExtractAppendedZip(Application.ExecutablePath, targetDir);
+                ExtractEmbeddedZip(targetDir);
                 string installedExe = Path.Combine(targetDir, "Fileora.exe");
                 string setupCopy = Path.Combine(targetDir, "Uninstall-Fileora.exe");
                 File.Copy(Application.ExecutablePath, setupCopy, true);
@@ -140,7 +158,7 @@ namespace FileoraSetup {
                 using (RegistryKey k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Fileora")) {
                     k.SetValue("DisplayName", "Fileora");
                     k.SetValue("DisplayVersion", "1.0.0");
-                    k.SetValue("Publisher", "Muhammad Lutfi Muzaki");
+                    k.SetValue("Publisher", "Muhammad Lutfi Muzaki & Attarashi Tomoddachi");
                     k.SetValue("DisplayIcon", installedExe);
                     k.SetValue("InstallLocation", targetDir);
                     k.SetValue("UninstallString", "\"" + setupCopy + "\" /uninstall");
@@ -161,39 +179,15 @@ namespace FileoraSetup {
             }
         }
 
-        static void ExtractAppendedZip(string selfPath, string destDir) {
-            byte[] magicBytes = System.Text.Encoding.ASCII.GetBytes(MAGIC);
-            using (FileStream fs = new FileStream(selfPath, FileMode.Open, FileAccess.Read, FileShare.Read)) {
-                if (fs.Length < magicBytes.Length + 8) throw new InvalidDataException("Payload installer tidak ditemukan.");
-                fs.Seek(-(magicBytes.Length + 8), SeekOrigin.End);
-                byte[] buf = new byte[8 + magicBytes.Length];
-                fs.Read(buf, 0, buf.Length);
-                string tail = System.Text.Encoding.ASCII.GetString(buf, 8, magicBytes.Length);
-                if (tail != MAGIC) throw new InvalidDataException("Signature payload installer tidak cocok.");
-                long zipLen = BitConverter.ToInt64(buf, 0);
-                long zipOffset = fs.Length - magicBytes.Length - 8 - zipLen;
-                fs.Seek(zipOffset, SeekOrigin.Begin);
-                string tmpZip = Path.Combine(Path.GetTempPath(), "fileora_setup_" + Guid.NewGuid().ToString("N") + ".zip");
-                try {
-                    using (FileStream outZip = File.Create(tmpZip)) {
-                        byte[] chunk = new byte[1048576];
-                        long rem = zipLen;
-                        while (rem > 0) {
-                            int r = fs.Read(chunk, 0, (int)Math.Min(chunk.Length, rem));
-                            if (r <= 0) break;
-                            outZip.Write(chunk, 0, r);
-                            rem -= r;
-                        }
+        static void ExtractEmbeddedZip(string destDir) {
+            using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip")) {
+                if (s == null) throw new InvalidDataException("Payload resource tidak ditemukan.");
+                using (ZipArchive za = new ZipArchive(s, ZipArchiveMode.Read)) {
+                    foreach (ZipArchiveEntry entry in za.Entries) {
+                        if (string.IsNullOrEmpty(entry.Name)) continue;
+                        string outFile = Path.Combine(destDir, entry.Name);
+                        entry.ExtractToFile(outFile, true);
                     }
-                    using (ZipArchive za = ZipFile.OpenRead(tmpZip)) {
-                        foreach (ZipArchiveEntry entry in za.Entries) {
-                            if (string.IsNullOrEmpty(entry.Name)) continue;
-                            string outFile = Path.Combine(destDir, entry.Name);
-                            entry.ExtractToFile(outFile, true);
-                        }
-                    }
-                } finally {
-                    if (File.Exists(tmpZip)) File.Delete(tmpZip);
                 }
             }
         }
@@ -206,42 +200,64 @@ namespace FileoraSetup {
             sc.TargetPath = targetExe;
             sc.WorkingDirectory = workDir;
             sc.IconLocation = targetExe + ",0";
-            sc.Description = "Fileora — Rename Dokumen Otomatis Berdasarkan Isi";
+            sc.Description = "Fileora — Muhammad Lutfi Muzaki & Attarashi Tomoddachi";
             sc.Save();
         }
     }
 }
 """
     stub_cs = DIST / "_setup_stub.cs"
-    stub_exe = DIST / "_setup_stub.exe"
     payload_zip = DIST / "_payload.zip"
-    stub_cs.write_text(cs_code, encoding="utf-8")
-    csc = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
     ico = ROOT / "assets" / "fileora.ico"
-    subprocess.run([
-        csc, "/nologo", "/target:winexe", "/optimize+",
-        f"/out:{stub_exe}", f"/win32icon:{ico}",
-        "/r:System.IO.Compression.dll", "/r:System.IO.Compression.FileSystem.dll",
-        "/r:Microsoft.CSharp.dll", str(stub_cs)
-    ], check=True)
+    stub_cs.write_text(cs_code, encoding="utf-8")
 
     with zipfile.ZipFile(payload_zip, "w", zipfile.ZIP_STORED) as zf:
         zf.write(APP_EXE, "Fileora.exe")
         zf.write(ROOT / "README.md", "README.md")
         zf.write(ico, "fileora.ico")
 
-    zip_size = payload_zip.stat().st_size
-    with open(SETUP_EXE, "wb") as out_f:
-        out_f.write(stub_exe.read_bytes())
-        with open(payload_zip, "rb") as pz:
-            while chunk := pz.read(1 << 20):
-                out_f.write(chunk)
-        out_f.write(zip_size.to_bytes(8, "little"))
-        out_f.write(b"FILEORA_PAYLOAD_V1")
+    csc = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+    subprocess.run([
+        csc, "/nologo", "/target:winexe", "/platform:x64", "/optimize+",
+        f"/out:{SETUP_EXE}", f"/win32icon:{ico}",
+        f"/resource:{payload_zip},payload.zip",
+        "/r:System.IO.Compression.dll", "/r:System.IO.Compression.FileSystem.dll",
+        "/r:Microsoft.CSharp.dll", str(stub_cs)
+    ], check=True)
 
     stub_cs.unlink(missing_ok=True)
-    stub_exe.unlink(missing_ok=True)
     payload_zip.unlink(missing_ok=True)
+
+
+def build_portable_zip() -> None:
+    print("[2/7] Membuat Portable .zip:", PORTABLE_ZIP.name)
+    PORTABLE_ZIP.unlink(missing_ok=True)
+    with zipfile.ZipFile(PORTABLE_ZIP, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        zf.write(APP_EXE, "Fileora-Portable/Fileora.exe")
+        zf.write(ROOT / "README.md", "Fileora-Portable/README.md")
+        zf.write(ROOT / "assets" / "fileora.ico", "Fileora-Portable/fileora.ico")
+        if (DIST / "Fileora-Publisher.cer").exists():
+            zf.write(DIST / "Fileora-Publisher.cer", "Fileora-Portable/Fileora-Publisher.cer")
+        if TRUST_BAT.exists():
+            zf.write(TRUST_BAT, "Fileora-Portable/Pasang-Sertifikat-Publisher.bat")
+        zf.writestr("Fileora-Portable/PORTABLE.txt",
+                    f"Fileora v{VER} (Portable Edition)\nPublisher: {PUBLISHER}\n\n"
+                    "Cara pakai:\n"
+                    "1. Jalankan langsung Fileora.exe tanpa perlu instalasi.\n"
+                    "2. Jika Windows menampilkan peringatan pada PC baru, jalankan Pasang-Sertifikat-Publisher.bat sekali.\n")
+
+
+def build_portable_7z() -> None:
+    print("[3/7] Membuat Portable .7z:", PORTABLE_7Z.name)
+    PORTABLE_7Z.unlink(missing_ok=True)
+    with py7zr.SevenZipFile(PORTABLE_7Z, "w") as archive:
+        archive.write(APP_EXE, "Fileora-Portable/Fileora.exe")
+        archive.write(ROOT / "README.md", "Fileora-Portable/README.md")
+        archive.write(ROOT / "assets" / "fileora.ico", "Fileora-Portable/fileora.ico")
+        if (DIST / "Fileora-Publisher.cer").exists():
+            archive.write(DIST / "Fileora-Publisher.cer", "Fileora-Portable/Fileora-Publisher.cer")
+        if TRUST_BAT.exists():
+            archive.write(TRUST_BAT, "Fileora-Portable/Pasang-Sertifikat-Publisher.bat")
 
 
 def build_msi() -> None:
@@ -254,7 +270,7 @@ def build_msi() -> None:
     wxs.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Fileora"
-           Manufacturer="{PUBLISHER}"
+           Manufacturer="{PUBLISHER_XML}"
            Version="{VER}.0"
            UpgradeCode="9854276C-11BA-4E4A-B2EE-33E45A67D97E"
            Scope="perUser"
@@ -268,7 +284,7 @@ def build_msi() -> None:
       <Directory Id="ProgramsDir" Name="Programs">
         <Directory Id="INSTALLFOLDER" Name="Fileora">
           <Component Id="MainExecutable" Guid="A114276C-11BA-4E4A-B2EE-33E45A67D901">
-            <RegistryValue Root="HKCU" Key="Software\\MuhammadLutfiMuzaki\\Fileora" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+            <RegistryValue Root="HKCU" Key="Software\\AttarashiTomoddachi\\Fileora" Name="installed" Type="integer" Value="1" KeyPath="yes" />
             <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
             <RemoveFolder Id="RemoveProgramsDir" Directory="ProgramsDir" On="uninstall" />
             <File Id="FileoraExe" Source="{exe}" />
@@ -280,10 +296,10 @@ def build_msi() -> None:
 
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut" Guid="B224276C-11BA-4E4A-B2EE-33E45A67D902">
-        <RegistryValue Root="HKCU" Key="Software\\MuhammadLutfiMuzaki\\Fileora" Name="shortcut" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\\AttarashiTomoddachi\\Fileora" Name="shortcut" Type="integer" Value="1" KeyPath="yes" />
         <Shortcut Id="ApplicationStartMenuShortcut"
                   Name="Fileora"
-                  Description="Fileora — Rename Dokumen Otomatis Berdasarkan Isi"
+                  Description="Fileora — {PUBLISHER_XML}"
                   Target="[INSTALLFOLDER]Fileora.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="FileoraIcon" />
@@ -304,7 +320,6 @@ def build_msi() -> None:
 
 
 def build_blockmap(target_file: Path) -> None:
-    """Buat file .blockmap terkompresi gzip berisi daftar hash SHA-256 per blok 64 KB untuk differential update."""
     print("[5/7] Membuat Differential Update .blockmap:", BLOCKMAP_FILE.name)
     block_size = 64 * 1024
     blocks = []
@@ -316,6 +331,7 @@ def build_blockmap(target_file: Path) -> None:
         "version": "2",
         "name": target_file.name,
         "publisher": PUBLISHER,
+        "organization": ORG,
         "blockSize": block_size,
         "files": [{
             "name": target_file.name,
@@ -331,22 +347,19 @@ def build_blockmap(target_file: Path) -> None:
 
 def build_sha256(artifacts: list[Path]) -> str:
     print("[6/7] Membuat Checksum .sha256:", SHA256_FILE.name)
-    lines = []
-    for p in artifacts:
-        lines.append(f"{sha256_hex(p)}  {p.name}")
+    lines = [f"{sha256_hex(p)}  {p.name}" for p in artifacts]
     content = "\n".join(lines) + "\n"
     SHA256_FILE.write_text(content, encoding="utf-8")
     return content
 
 
 def build_signature(sha256_content: str, artifacts: list[Path]) -> None:
-    """Buat pasangan kunci RSA-3072 + X.509 Publisher Certificate dan tandatangani seluruh artefak ke .sig."""
     print("[7/7] Membuat Digital Signature .sig:", SIG_FILE.name)
     key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "ID"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, PUBLISHER),
-        x509.NameAttribute(NameOID.COMMON_NAME, f"{PUBLISHER} Code Signing"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, ORG),
+        x509.NameAttribute(NameOID.COMMON_NAME, PUBLISHER),
     ])
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (
@@ -378,6 +391,7 @@ def build_signature(sha256_content: str, artifacts: list[Path]) -> None:
         "application": "Fileora",
         "version": VER,
         "publisher": PUBLISHER,
+        "organization": ORG,
         "algorithm": "RSA-3072-PSS-SHA256",
         "timestamp_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sha256_manifest_signature": manifest_sig,
@@ -389,19 +403,23 @@ def build_signature(sha256_content: str, artifacts: list[Path]) -> None:
 
 def main() -> None:
     assert APP_EXE.exists(), f"Tidak ditemukan: {APP_EXE}"
+    write_trust_helper()
+    # 1. Tandatangani Fileora.exe terlebih dahulu sebelum dimasukkan ke dalam Setup.exe, MSI, ZIP, dan 7z
+    authenticode_sign(APP_EXE)
     build_setup_exe()
-    build_portable_zip()
     build_msi()
+    # 2. Tandatangani Setup.exe dan Setup.msi dengan Authenticode
+    authenticode_sign(SETUP_EXE, SETUP_MSI)
+    build_portable_zip()
     build_portable_7z()
     build_blockmap(SETUP_EXE)
     core_files = [SETUP_EXE, PORTABLE_ZIP, SETUP_MSI, PORTABLE_7Z, BLOCKMAP_FILE, APP_EXE]
     sha_text = build_sha256(core_files)
     build_signature(sha_text, core_files)
-    print("\n=== Seluruh Artefak Rilis Selesai Dibuat ===")
+    print("\n=== Seluruh Artefak Rilis Selesai Dibuat & Ditandatangani ===")
     for f in [*core_files, SHA256_FILE, SIG_FILE]:
         print(f" - {f.name:32s} ({f.stat().st_size / (1 << 20):6.2f} MB)")
 
 
 if __name__ == "__main__":
     main()
-

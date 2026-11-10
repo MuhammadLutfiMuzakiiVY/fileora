@@ -2,8 +2,8 @@
 [Setup]
 AppName=Fileora
 AppVersion=1.0.0
-AppPublisher=Muhammad Lutfi Muzaki
-AppCopyright=Copyright (C) 2026 Muhammad Lutfi Muzaki
+AppPublisher=Muhammad Lutfi Muzaki & Attarashi Tomoddachi
+AppCopyright=Copyright (C) 2026 Muhammad Lutfi Muzaki & Attarashi Tomoddachi
 DefaultDirName={autopf}\Fileora
 DefaultGroupName=Fileora
 SetupIconFile=assets\fileora.ico

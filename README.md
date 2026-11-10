@@ -1,6 +1,6 @@
 # Fileora — Rename Dokumen Otomatis Berdasarkan Isi
 
-**Publisher / Author:** Muhammad Lutfi Muzaki
+**Publisher / Author:** Muhammad Lutfi Muzaki & Attarashi Tomoddachi
 
 Aplikasi desktop Windows (100% offline) untuk me-rename ratusan hingga ribuan file dokumen/surat sekaligus berdasarkan teks di dalam dokumen.
 
@@ -39,11 +39,18 @@ Seluruh paket rilis tersedia di folder `dist\` dan GitHub Releases (dibuat otoma
 | :--- | :--- | :--- | :--- |
 | `.exe` | `Fileora-1.0.0-Setup.exe` | Windows installer (membuat shortcut Desktop, Start Menu & Uninstaller) | **Wajib** |
 | `.zip` | `Fileora-1.0.0-Portable.zip` | Portable version tanpa instalasi | **Wajib** |
-| `.msi` | `Fileora-1.0.0-Setup.msi` | Windows Installer Package (WiX MSI x64) | **Disarankan** |
+| `.msi` | `Fileora-1.0.0-Setup.msi` | Windows Installer Package (WiX MSI x64, Signed) | **Disarankan** |
 | `.7z` | `Fileora-1.0.0-Portable.7z` | Portable archive ukuran lebih kecil (LZMA2) | **Opsional** |
 | `.sha256` | `Fileora-1.0.0.sha256` | Verifikasi integritas seluruh file rilis | **Wajib** |
 | `.sig` | `Fileora-1.0.0.sig` | Verifikasi tanda tangan digital (`RSA-3072-PSS-SHA256` + X.509 Publisher Cert) | **Opsional** |
 | `.blockmap` | `Fileora-1.0.0.blockmap` | Differential update blockmap (64 KB block SHA-256) | **Opsional** |
+| `.cer` / `.bat` | `Fileora-Publisher.cer` / `Pasang-Sertifikat-Publisher.bat` | Sertifikat Code Signing resmi `Muhammad Lutfi Muzaki & Attarashi Tomoddachi` | **Keamanan Windows** |
+
+> **Catatan Keamanan Windows (SmartScreen / Unknown Publisher):**
+> - Seluruh file `.exe` dan `.msi` telah ditandatangani secara digital (*Authenticode SHA-256*) atas nama **Muhammad Lutfi Muzaki & Attarashi Tomoddachi**.
+> - Untuk menghilangkan peringatan *Windows SmartScreen* saat mengunduh dari browser di PC lain:
+>   1. Cara tercepat tanpa peringatan: unduh **`Fileora-1.0.0-Portable.zip`**, ekstrak, lalu jalankan `Fileora.exe` (atau jalankan `Pasang-Sertifikat-Publisher.bat` sekali).
+>   2. Jika muncul jendela biru *Windows protected your PC*, klik tulisan **"More info"** (*Informasi selengkapnya*) lalu klik tombol **"Run anyway"** (*Tetap jalankan*).
 
 ### Build Menjadi `Fileora.exe` & Seluruh Paket Distribusi
 

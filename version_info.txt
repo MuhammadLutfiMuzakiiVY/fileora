@@ -15,11 +15,11 @@ VSVersionInfo(
       StringTable(
         '040904B0',
         [
-          StringStruct('CompanyName', 'Muhammad Lutfi Muzaki'),
+          StringStruct('CompanyName', 'Muhammad Lutfi Muzaki & Attarashi Tomoddachi'),
           StringStruct('FileDescription', 'Fileora — Rename Dokumen Otomatis Berdasarkan Isi'),
           StringStruct('FileVersion', '1.0.0.0'),
           StringStruct('InternalName', 'Fileora'),
-          StringStruct('LegalCopyright', 'Copyright (C) 2026 Muhammad Lutfi Muzaki'),
+          StringStruct('LegalCopyright', 'Copyright (C) 2026 Muhammad Lutfi Muzaki & Attarashi Tomoddachi'),
           StringStruct('OriginalFilename', 'Fileora.exe'),
           StringStruct('ProductName', 'Fileora'),
           StringStruct('ProductVersion', '1.0.0.0')
@@ -29,4 +29,3 @@ VSVersionInfo(
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]
 )
-
