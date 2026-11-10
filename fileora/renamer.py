@@ -1,7 +1,8 @@
-"""Rencana nama baru (template, sanitasi Windows, duplikat, panjang) + eksekusi & undo."""
+"""Rencana nama baru (template, sanitasi Windows, duplikat, panjang, confidence) + eksekusi & undo."""
 import os
 import re
 import shutil
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -18,14 +19,15 @@ _TRIM = " .-_"
 @dataclass
 class Item:
     src: Path
-    rel_dir: str = ""          # subfolder relatif untuk output
+    rel_dir: str = ""               # subfolder relatif untuk output
     in_zip: bool = False
     pages: list[str] | None = None  # None = belum dibaca
     error: str = ""
-    manual: str = ""           # nama hasil edit manual di preview
+    manual: str = ""                # nama hasil edit manual di preview
     values: dict[str, str] = field(default_factory=dict)
     new_name: str = ""
     status: str = ""
+    confidence: int = 0             # 0..100 (%)
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -42,6 +44,14 @@ def apply_case(v: str, case: str) -> str:
     return {"upper": v.upper(), "lower": v.lower(), "title": v.title()}.get(case, v)
 
 
+def format_val(v: str, preset) -> str:
+    s = sanitize(apply_case(v, preset.case))
+    repl = getattr(preset, "space_repl", " ")
+    if repl and repl != " ":
+        s = re.sub(r"\s+", repl, s)
+    return s
+
+
 def template_fields(preset) -> list[str]:
     return re.findall(r"{(\w+)}", preset.template)
 
@@ -49,7 +59,7 @@ def template_fields(preset) -> list[str]:
 def build_stem(values: dict[str, str], preset) -> tuple[str, bool]:
     """Return (nama tanpa ekstensi, dipotong?). Jika kepanjangan, field terpanjang yang dipotong."""
     tpl = preset.template.replace("}_{", "}" + preset.separator + "{")
-    vals = {k: apply_case(v, preset.case) for k, v in values.items()}
+    vals = {k: format_val(v, preset) for k, v in values.items()}
     room = preset.max_len - len(EXT)
     stem = sanitize(tpl.format_map(vals))
     if len(stem) <= room:
@@ -60,7 +70,7 @@ def build_stem(values: dict[str, str], preset) -> tuple[str, bool]:
 
 
 def _propose(it: Item, preset) -> str | None:
-    it.status, it.notes, it.values = OK, [], {}
+    it.status, it.notes, it.values, it.confidence = OK, [], {}, 100
     notes, missing = [], []
     if it.pages:
         it.values, notes, missing = extract_fields(it.pages, preset.sources)
@@ -68,20 +78,31 @@ def _propose(it: Item, preset) -> str | None:
     manual = manual[:preset.max_len - len(EXT)].rstrip(_TRIM)
     if manual:
         it.notes = [*notes, "Nama diedit manual"]
+        it.confidence = 100
         return manual
     if it.error or it.pages is None:
-        it.status, it.notes = FAIL, [it.error or "Belum dibaca"]
+        it.status, it.notes, it.confidence = FAIL, [it.error or "Belum dibaca"], 0
         return None
     it.notes += notes
-    missing = [f for f in template_fields(preset) if f not in it.values]
+    req = template_fields(preset)
+    missing = [f for f in req if f not in it.values]
     if missing:
+        found_ratio = (len(req) - len(missing)) / max(1, len(req))
+        it.confidence = int(found_ratio * 40)
         it.status, it.notes = FAIL, [f"Perlu cek: field tidak ditemukan ({', '.join(missing)})", *notes]
         return None
+    for f, v in it.values.items():
+        if len(v.strip()) < 2:
+            it.notes.append(f"Perlu cek: nilai {f} terlalu pendek («{v}»)")
+            it.confidence = min(it.confidence, 60)
+    if notes:  # sumber berbeda antar halaman
+        it.confidence = min(it.confidence, 80)
     stem, cut = build_stem(it.values, preset)
     if cut:
         it.notes.append(f"Nama dipotong (maks {preset.max_len} karakter)")
+        it.confidence = min(it.confidence, 85)
     if not stem:
-        it.status, it.notes = FAIL, ["Nama hasil kosong"]
+        it.status, it.notes, it.confidence = FAIL, ["Nama hasil kosong"], 0
         return None
     if it.notes:
         it.status = WARN
@@ -99,26 +120,36 @@ def _unique(stem: str, taken: set[str], max_len: int, ext: str = EXT) -> tuple[s
 
 
 def plan(items: list[Item], preset, inplace: bool = False) -> None:
-    """Isi new_name/status/notes tiap item. Gagal -> nama lama dipertahankan."""
+    """Isi new_name/status/notes/confidence tiap item. Gagal -> nama lama dipertahankan."""
     taken: dict[str, set[str]] = {}
-    if inplace:  # file lain di folder yg sama (di luar batch) tidak boleh tertimpa
+    flat = getattr(preset, "flat_zip", False) and not inplace
+    if inplace:
         batch = {str(it.src).lower() for it in items}
         for d in {it.src.parent for it in items}:
             taken[str(d).lower()] = {p.name.lower() for p in d.iterdir() if str(p).lower() not in batch}
 
     def key(it):
-        return str(it.src.parent).lower() if inplace else it.rel_dir.lower()
+        if inplace:
+            return str(it.src.parent).lower()
+        return "" if flat else it.rel_dir.lower()
 
     stems = [_propose(it, preset) for it in items]
-    for it, stem in zip(items, stems):  # yang gagal dipesan dulu dgn nama lamanya
+    npp_counts = Counter(it.values.get("npp", "").upper() for it in items if it.values.get("npp"))
+    for it, stem in zip(items, stems):
         if stem is None:
             it.new_name, _ = _unique(it.src.stem, taken.setdefault(key(it), set()), 10**6, it.src.suffix)
     for it, stem in zip(items, stems):
         if stem is not None:
             it.new_name, dup = _unique(stem, taken.setdefault(key(it), set()), preset.max_len)
+            npp = it.values.get("npp", "").upper()
             if dup:
                 it.status = WARN
+                it.confidence = min(it.confidence, 75)
                 it.notes.append("Nama kembar, diberi akhiran")
+            elif npp and npp_counts[npp] > 1:
+                it.status = WARN
+                it.confidence = min(it.confidence, 80)
+                it.notes.append(f"NPP duplikat ({npp_counts[npp]} dokumen)")
 
 
 def safe_moves(pairs: list[tuple[Path, Path]]) -> None:
@@ -142,17 +173,18 @@ def safe_moves(pairs: list[tuple[Path, Path]]) -> None:
         raise
 
 
-def execute(items: list[Item], mode: str, target=None, progress=None) -> dict:
+def execute(items: list[Item], mode: str, target=None, progress=None, flat: bool = False) -> dict:
     """mode: 'zip' (target=file .zip), 'folder' (target=folder baru), 'inplace'. Return log undo."""
     if mode == "zip":
-        write_zip(((it.src, str(PurePosixPath(it.rel_dir, it.new_name))) for it in items), target, progress)
+        entries = ((it.src, it.new_name if flat else str(PurePosixPath(it.rel_dir, it.new_name))) for it in items)
+        write_zip(entries, target, progress)
         return {"mode": "zip", "created": [str(target)]}
     if mode == "folder":
         root = Path(target)
         root.mkdir(parents=True, exist_ok=False)
         created = []
         for i, it in enumerate(items, 1):
-            dst = root / it.rel_dir / it.new_name
+            dst = (root / it.new_name) if flat else (root / it.rel_dir / it.new_name)
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(it.src, dst)
             created.append(str(dst))
@@ -168,12 +200,12 @@ def undo(log: dict) -> None:
     if log["mode"] == "inplace":
         safe_moves([(Path(b), Path(a)) for a, b in log["moves"]])
         return
-    for f in log["created"]:  # hanya hapus file buatan Fileora; file asli tidak disentuh
+    for f in log["created"]:
         Path(f).unlink(missing_ok=True)
     if log["mode"] == "folder":
         dirs = {Path(f).parent for f in log["created"]} | {Path(log["root"])}
         for d in sorted(dirs, key=lambda d: len(d.parts), reverse=True):
             try:
-                d.rmdir()  # hanya jika kosong
+                d.rmdir()
             except OSError:
                 pass

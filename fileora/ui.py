@@ -1,4 +1,4 @@
-"""Antarmuka PySide6 Fileora."""
+"""Antarmuka PySide6 Fileora — PDF Bulk Renamer."""
 import logging
 import os
 import re
@@ -11,7 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-                               QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
+                               QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QStackedWidget,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -22,6 +22,7 @@ from fileora.rules import MODES, Source, extract_fields, find, learn_source
 COLORS = {OK: "#2e7d32", WARN: "#f9a825", FAIL: "#c62828"}
 OUT_MODES = {"zip": "ZIP baru", "folder": "Folder baru", "inplace": "Rename di tempat"}
 CASES = {"asis": "Apa adanya", "upper": "HURUF BESAR", "lower": "huruf kecil", "title": "Title Case"}
+SPACES = {" ": "Pertahankan spasi ( )", "-": "Ganti strip (-)", "_": "Ganti garis bawah (_)"}
 
 
 def resource(rel: str) -> str:
@@ -30,6 +31,10 @@ def resource(rel: str) -> str:
 
 def field_key(text: str) -> str:
     return re.sub(r"\W+", "_", text.strip().lower()).strip("_")
+
+
+def fmt_bytes(n: int) -> str:
+    return f"{n / (1 << 20):.2f} MB" if n >= (1 << 20) else f"{n / 1024:.1f} KB"
 
 
 def row(*widgets, stretch=None) -> QHBoxLayout:
@@ -59,6 +64,34 @@ class Worker(QThread):
         except Exception as e:
             logging.exception("Proses gagal")
             self.error = e
+
+
+class HistoryDialog(QDialog):
+    """Layar Riwayat Pemrosesan (Processing History)."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Riwayat Pemrosesan")
+        self.resize(840, 460)
+        hist = logger.load_history()
+        table = QTableWidget(len(hist), 7)
+        table.setHorizontalHeaderLabels(["Waktu", "Arsip / Input", "Total", "Berhasil", "Perlu Cek", "Gagal", "Hasil Output"])
+        table.verticalHeader().hide()
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        for r, h in enumerate(hist):
+            vals = [h.get("timestamp", ""), h.get("source", ""), str(h.get("total", 0)),
+                    str(h.get("ok", 0)), str(h.get("warn", 0)), str(h.get("fail", 0)), h.get("output", "")]
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+                table.setItem(r, c, it)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(table, 1)
+        lay.addWidget(bb)
 
 
 class LearnDialog(QDialog):
@@ -133,7 +166,7 @@ class RulesDialog(QDialog):
     def __init__(self, parent, preset, items, ocr):
         super().__init__(parent)
         self.setWindowTitle("Aturan Ekstraksi")
-        self.resize(900, 700)
+        self.resize(900, 720)
         self.items, self.ocr, self.saved_name = items, ocr, preset.name
         self.name = QLineEdit(preset.name)
         self.table = QTableWidget(0, 4)
@@ -154,21 +187,29 @@ class RulesDialog(QDialog):
         for k, v in CASES.items():
             self.case.addItem(v, k)
         self.case.setCurrentIndex(list(CASES).index(preset.case))
+        self.space = QComboBox()
+        for k, v in SPACES.items():
+            self.space.addItem(v, k)
+        self.space.setCurrentIndex(list(SPACES).index(getattr(preset, "space_repl", " ") if getattr(preset, "space_repl", " ") in SPACES else " "))
+        self.flat = QCheckBox("Gabungkan semua PDF di satu level (abaikan subfolder di dalam ZIP)")
+        self.flat.setChecked(getattr(preset, "flat_zip", False))
         self.max_len = QSpinBox()
         self.max_len.setRange(20, 240)
         self.max_len.setValue(preset.max_len)
         self.info = QLabel()
         hint = QLabel("Baris dengan field yang sama = sumber cadangan/pembanding (urutan = prioritas). "
                       "Jika hasilnya berbeda, dipakai yang terpanjang dan diberi peringatan.\n"
-                      "Template: {nama_field}. Tanda _ di antara field diganti dengan Pemisah.")
+                      "Template: {nama_field}. Contoh: {npp}_{nama_perusahaan} atau {nama_perusahaan}_{npp}.")
         hint.setWordWrap(True)
         form = QFormLayout()
         form.addRow("Nama preset:", self.name)
         form2 = QFormLayout()
         form2.addRow("Template nama file:", self.template)
-        form2.addRow("Pemisah:", self.sep)
+        form2.addRow("Pemisah antar field:", self.sep)
+        form2.addRow("Spasi di dalam teks:", self.space)
         form2.addRow("Format huruf:", self.case)
         form2.addRow("Panjang maks. nama:", self.max_len)
+        form2.addRow("Struktur folder:", self.flat)
         bb = QDialogButtonBox(QDialogButtonBox.Cancel)
         save = bb.addButton("Simpan && Pakai", QDialogButtonBox.AcceptRole)
         delete = bb.addButton("Hapus Preset", QDialogButtonBox.DestructiveRole)
@@ -227,7 +268,8 @@ class RulesDialog(QDialog):
 
     def preset(self) -> presets.Preset:
         return presets.Preset(self.name.text().strip(), self.sources(), self.template.text().strip(),
-                              self.sep.text(), self.case.currentData(), self.max_len.value())
+                              self.sep.text(), self.case.currentData(), self.max_len.value(),
+                              self.space.currentData(), self.flat.isChecked())
 
     def learn(self):
         dlg = LearnDialog(self, self.items, list(dict.fromkeys(s.field for s in self.sources())), self.ocr)
@@ -268,25 +310,52 @@ def _valid_regex(p: str) -> bool:
         return False
 
 
+def _card(title: str) -> tuple[QFrame, QLabel]:
+    box = QFrame()
+    box.setFrameShape(QFrame.StyledPanel)
+    lay = QVBoxLayout(box)
+    lay.setContentsMargins(10, 6, 10, 6)
+    lbl_title = QLabel(title)
+    lbl_title.setStyleSheet("font-size: 11px; color: #757575;")
+    lbl_val = QLabel("0")
+    lbl_val.setStyleSheet("font-size: 15px; font-weight: bold;")
+    lay.addWidget(lbl_title)
+    lay.addWidget(lbl_val)
+    return box, lbl_val
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"Fileora {__version__} — Rename PDF otomatis berdasarkan isi")
-        self.resize(1200, 720)
+        self.setWindowTitle(f"Fileora {__version__} — PDF Bulk Renamer")
+        self.resize(1260, 760)
         self.setAcceptDrops(True)
         self.settings = QSettings("Fileora", "Fileora")
         self.items: list[Item] = []
+        self.archives: list[zip_handler.ArchiveStats] = []
         self.tmp: tempfile.TemporaryDirectory | None = None
         self.first_input: Path | None = None
         self.worker: Worker | None = None
 
         add_files, add_dir, clear = QPushButton("Tambah ZIP/PDF…"), QPushButton("Tambah Folder…"), QPushButton("Bersihkan")
-        self.preset_box = QComboBox(minimumWidth=220)
+        self.preset_box = QComboBox(minimumWidth=240)
         rules_btn = QPushButton("Aturan Ekstraksi…")
+        hist_btn = QPushButton("Riwayat…")
         self.ocr = QCheckBox("Aktifkan OCR")
         self.ocr.setToolTip("Untuk PDF hasil scan (tanpa teks). Proses jauh lebih lambat; butuh Tesseract.")
         self.ocr.setChecked(self.settings.value("ocr", False, bool))
         self.dark = QCheckBox("Mode gelap")
+
+        # Dashboard metrik (Total, Berhasil, Perlu Cek, Gagal, Info Arsip, Kecepatan & ETA)
+        c_tot, self.m_total = _card("Total PDF")
+        c_ok, self.m_ok = _card("Berhasil (OK)")
+        c_warn, self.m_warn = _card("Perlu Cek (Peringatan)")
+        c_fail, self.m_fail = _card("Gagal")
+        c_zip, self.m_zip = _card("Info Arsip Input")
+        c_spd, self.m_speed = _card("Kecepatan & Sisa Waktu")
+        self.m_zip.setText("—")
+        self.m_speed.setText("—")
+
         self.filter = QComboBox()
         self.filter.addItems(["Semua", OK, WARN, FAIL])
         self.search = QLineEdit(placeholderText="Cari nama file / NPP / perusahaan…", clearButtonEnabled=True)
@@ -294,8 +363,8 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget()
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        hint = QLabel("Tarik & lepas file ZIP, PDF, atau folder ke sini\natau klik “Tambah ZIP/PDF…”",
-                      alignment=Qt.AlignCenter)
+        hint = QLabel("Tarik & lepas file ZIP (hingga 100MB+ / 1.000+ PDF), PDF, atau folder ke sini\n"
+                      "atau klik “Tambah ZIP/PDF…”", alignment=Qt.AlignCenter)
         hint.setFont(QFont(hint.font().family(), 14))
         self.stack = QStackedWidget()
         self.stack.addWidget(hint)
@@ -305,16 +374,20 @@ class MainWindow(QMainWindow):
             self.mode.addItem(v, k)
         run_btn, undo_btn, report = QPushButton("Rename Semua"), QPushButton("Undo"), QPushButton("Ekspor Laporan…")
         run_btn.setStyleSheet("font-weight: bold; padding: 4px 16px;")
-        self.progress, self.status = QProgressBar(), QLabel("Semua proses berjalan offline.")
-        self.busy_widgets = [add_files, add_dir, clear, self.preset_box, rules_btn, self.ocr, self.mode,
+        self.progress, self.status = QProgressBar(), QLabel("100% berjalan lokal/offline.")
+        self.busy_widgets = [add_files, add_dir, clear, self.preset_box, rules_btn, hist_btn, self.ocr, self.mode,
                              run_btn, undo_btn, report, self.table]
 
-        top = row(add_files, add_dir, clear, QLabel("   Preset:"), self.preset_box, rules_btn)
+        top = row(add_files, add_dir, clear, QLabel("   Preset:"), self.preset_box, rules_btn, hist_btn)
         top.addStretch()
         top.addWidget(self.ocr)
         top.addWidget(self.dark)
+        dash = QHBoxLayout()
+        for card in (c_tot, c_ok, c_warn, c_fail, c_zip, c_spd):
+            dash.addWidget(card, 1)
         root = QVBoxLayout()
         root.addLayout(top)
+        root.addLayout(dash)
         root.addLayout(row(QLabel("Tampilkan:"), self.filter, self.search, self.summary, stretch=self.search))
         root.addWidget(self.stack, 1)
         root.addLayout(row(QLabel("Hasil:"), self.mode, run_btn, undo_btn, report, self.progress, self.status,
@@ -328,6 +401,7 @@ class MainWindow(QMainWindow):
         clear.clicked.connect(self.clear_all)
         self.preset_box.currentTextChanged.connect(self.on_preset)
         rules_btn.clicked.connect(self.open_rules)
+        hist_btn.clicked.connect(lambda: HistoryDialog(self).exec())
         self.ocr.toggled.connect(self.on_ocr)
         self.dark.toggled.connect(self.on_dark)
         self.filter.currentIndexChanged.connect(self.apply_filter)
@@ -362,11 +436,12 @@ class MainWindow(QMainWindow):
         if not paths or self.busy():
             return
         self.tmp = self.tmp or tempfile.TemporaryDirectory(prefix="fileora_")
-        found, skipped = zip_handler.collect(paths, self.tmp.name)
+        found, skipped, arch = zip_handler.collect(paths, self.tmp.name)
+        self.archives += arch
         known = {it.src for it in self.items}
         new = [Item(p, rel, z) for p, rel, z in found if p not in known]
         if skipped:
-            QMessageBox.warning(self, "Fileora", "Dilewati (bukan PDF/ZIP atau entri ZIP tidak aman):\n"
+            QMessageBox.warning(self, "Fileora", "Dilewati (bukan PDF, ZIP rusak, atau entri tidak aman):\n"
                                 + "\n".join(skipped[:20]))
         if not new:
             return
@@ -374,20 +449,18 @@ class MainWindow(QMainWindow):
             self.first_input = Path(paths[0])
             self.mode.setCurrentIndex(list(OUT_MODES).index("zip" if any(it.in_zip for it in new) else "folder"))
         self.items += new
+        if self.archives:
+            tot_sz = sum(a.size_bytes for a in self.archives)
+            tot_pdf = sum(a.pdf_count for a in self.archives)
+            names = ", ".join(a.name for a in self.archives[:2])
+            self.m_zip.setText(f"{names} ({fmt_bytes(tot_sz)} · {tot_pdf} PDF)")
+        else:
+            self.m_zip.setText(f"{self.first_input.name} ({len(self.items)} PDF)")
         self.scan(new)
 
     def scan(self, items):
         ocr = self.ocr.isChecked()
-
-        def job(progress):
-            for i, it in enumerate(items, 1):
-                try:
-                    it.pages = extractor.extract_pages(it.src, ocr)
-                except Exception as e:
-                    it.error = f"Gagal dibaca: {e}"
-                progress(i, len(items))
-
-        self.run_job(job, "Membaca PDF", lambda _: self.refresh())
+        self.run_job(lambda p: extractor.extract_batch(items, ocr, p), "Membaca PDF", lambda _: self.refresh())
 
     # ---------- worker ----------
     def busy(self) -> bool:
@@ -405,48 +478,62 @@ class MainWindow(QMainWindow):
     def on_progress(self, i, n):
         self.progress.setMaximum(n)
         self.progress.setValue(i)
-        self.status.setText(f"{self.job_label}: {i}/{n}")
+        elapsed = max(0.001, time.perf_counter() - self.t0)
+        rate = i / elapsed
+        eta = (n - i) / rate if rate > 0 else 0
+        self.m_speed.setText(f"{rate:.1f} dok/dtk · ETA {eta:.1f} dtk")
+        self.status.setText(f"{self.job_label}: {i}/{n} ({i * 100 // max(1, n)}%)")
 
     def on_finished(self):
         for w in self.busy_widgets:
             w.setEnabled(True)
         w = self.worker
+        elapsed = max(0.001, time.perf_counter() - self.t0)
         if w.error:
             self.status.setText(f"{self.job_label} gagal")
             QMessageBox.critical(self, "Fileora", f"{self.job_label} gagal:\n{w.error}")
         else:
-            self.status.setText(f"{self.job_label} selesai ({time.perf_counter() - self.t0:.1f} dtk)")
+            rate = max(1, self.progress.maximum()) / elapsed
+            self.m_speed.setText(f"{rate:.1f} dok/dtk · Selesai {elapsed:.2f} dtk")
+            self.status.setText(f"{self.job_label} selesai ({elapsed:.2f} dtk)")
             self.job_done_cb(w.result)
 
     # ---------- preview ----------
     def refresh(self):
         renamer.plan(self.items, self.preset, self.mode.currentData() == "inplace")
         fields = self.preset.fields
-        cols = ["Status", "Nama lama", "Nama baru (bisa diedit)", *(f.replace("_", " ").upper() for f in fields), "Catatan"]
+        cols = ["Status", "Confidence", "Nama lama", "Nama baru (bisa diedit)",
+                *(f.replace("_", " ").upper() for f in fields), "Catatan"]
         t = self.table
+        t.setUpdatesEnabled(False)
         t.blockSignals(True)
         t.clear()
         t.setColumnCount(len(cols))
         t.setHorizontalHeaderLabels(cols)
         t.setRowCount(len(self.items))
         for r, it in enumerate(self.items):
-            vals = [it.status, str(Path(it.rel_dir, it.old_name)), it.new_name,
+            vals = [it.status, f"{it.confidence}%", str(Path(it.rel_dir, it.old_name)), it.new_name,
                     *(it.values.get(f, "") for f in fields), "; ".join(it.notes)]
             for c, v in enumerate(vals):
                 cell = QTableWidgetItem(v)
                 cell.setToolTip(v)
-                if c != 2:
+                if c != 3:
                     cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
                 t.setItem(r, c, cell)
             t.item(r, 0).setBackground(QColor(COLORS[it.status]))
             t.item(r, 0).setForeground(QColor("black" if it.status == WARN else "white"))
         t.resizeColumnsToContents()
-        for c in (1, 2):
+        for c in (2, 3):
             t.setColumnWidth(c, min(t.columnWidth(c), 380))
         t.horizontalHeader().setStretchLastSection(True)
         t.blockSignals(False)
+        t.setUpdatesEnabled(True)
         self.stack.setCurrentIndex(1 if self.items else 0)
         n = Counter(it.status for it in self.items)
+        self.m_total.setText(str(len(self.items)))
+        self.m_ok.setText(str(n[OK]))
+        self.m_warn.setText(str(n[WARN]))
+        self.m_fail.setText(str(n[FAIL]))
         self.summary.setText(f"{len(self.items)} file — OK {n[OK]} · Peringatan {n[WARN]} · Gagal {n[FAIL]}")
         self.apply_filter()
 
@@ -457,14 +544,15 @@ class MainWindow(QMainWindow):
             self.table.setRowHidden(r, (want != "Semua" and it.status != want) or (bool(q) and q not in hay))
 
     def on_edit(self, cell):
-        if cell.column() == 2:
+        if cell.column() == 3:
             self.items[cell.row()].manual = cell.text().strip()
-            QTimer.singleShot(0, self.refresh)  # jangan bangun ulang tabel di dalam sinyalnya sendiri
+            QTimer.singleShot(0, self.refresh)
 
     # ---------- preset & opsi ----------
     def load_presets(self, select=None):
         self.presets = presets.load_all()
-        name = next(n for n in (select, self.settings.value("preset"), presets.BPJS.name) if n in self.presets)
+        name = next((n for n in (select, self.settings.value("preset"), presets.BPJS.name) if n in self.presets),
+                    next(iter(self.presets)))
         self.preset_box.blockSignals(True)
         self.preset_box.clear()
         self.preset_box.addItems(list(self.presets))
@@ -530,13 +618,20 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Fileora", msg + "\n\nLanjutkan?") != QMessageBox.Yes:
             return
         items = list(self.items)
-        self.run_job(lambda p: renamer.execute(items, mode, target, p), "Rename", self.rename_done)
+        flat = getattr(self.preset, "flat_zip", False)
+        self.run_job(lambda p: renamer.execute(items, mode, target, p, flat=flat), "Rename", self.rename_done)
 
     def rename_done(self, log):
         logger.save_undo(log)
         if log["mode"] == "inplace":
             self.remap(dict(log["moves"]))
         where = Path(log.get("root") or (log["created"][0] if log["mode"] == "zip" else self.items[0].src))
+        n = Counter(it.status for it in self.items)
+        logger.append_history({
+            "source": self.first_input.name if self.first_input else "",
+            "total": len(self.items), "ok": n[OK], "warn": n[WARN], "fail": n[FAIL],
+            "output": str(where),
+        })
         if QMessageBox.question(self, "Fileora", f"Selesai: {len(self.items)} file.\nHasil: {where}\n\n"
                                                  "Buka lokasi hasil?") == QMessageBox.Yes:
             os.startfile(where if where.is_dir() else where.parent)
@@ -580,7 +675,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Fileora", f"Gagal menyimpan laporan:\n{e}")
 
     def clear_all(self):
-        self.items, self.first_input = [], None
+        self.items, self.archives, self.first_input = [], [], None
+        self.m_zip.setText("—")
+        self.m_speed.setText("—")
         if self.tmp:
             self.tmp.cleanup()
             self.tmp = None

@@ -1,34 +1,65 @@
-"""Input ZIP/folder/PDF dan output ZIP. Ekstraksi aman dari zip-slip."""
+"""Input ZIP/folder/PDF dan output ZIP. Ekstraksi aman dari zip-slip dan zip-bomb."""
 import logging
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
+MAX_ENTRY_BYTES = 200 * (1 << 20)   # 200 MB per PDF
+MAX_TOTAL_BYTES = 2048 * (1 << 20)  # 2 GB total ekstraksi
+MAX_RATIO = 100                     # rasio kompresi maks (anti zip-bomb)
 
-def extract_zip(zip_path, dest) -> tuple[list[Path], list[str]]:
-    """Ekstrak hanya PDF ke dest. Return (pdf, nama yang dilewati)."""
+
+@dataclass
+class ArchiveStats:
+    name: str
+    size_bytes: int
+    pdf_count: int
+    skipped_count: int
+
+
+def extract_zip(zip_path, dest, include_other: bool = False) -> tuple[list[Path], list[str], ArchiveStats]:
+    """Ekstrak PDF dari zip_path ke dest dengan validasi integritas, anti zip-slip, dan anti zip-bomb."""
+    zp = Path(zip_path)
     dest = Path(dest).resolve()
     files, skipped = [], []
-    with zipfile.ZipFile(zip_path) as zf:
+    total_written = 0
+    with zipfile.ZipFile(zp) as zf:
         for info in zf.infolist():
             name = info.filename
-            if info.is_dir() or not name.lower().endswith(".pdf") or "__MACOSX" in name:
+            if info.is_dir() or "__MACOSX" in name:
+                continue
+            is_pdf = name.lower().endswith(".pdf")
+            if not is_pdf and not include_other:
                 continue
             target = (dest / name).resolve()
             if not target.is_relative_to(dest):  # zip-slip: ../ atau path absolut
-                logging.warning("Lewati entri ZIP mencurigakan: %s", name)
+                logging.warning("Lewati entri ZIP mencurigakan (zip-slip): %s", name)
+                skipped.append(name)
+                continue
+            comp = max(1, info.compress_size)
+            if info.file_size > MAX_ENTRY_BYTES or (info.file_size > (1 << 20) and info.file_size / comp > MAX_RATIO):
+                logging.warning("Lewati entri ZIP melebihi batas ukuran/rasio (zip-bomb): %s", name)
                 skipped.append(name)
                 continue
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
+                written = 0
                 with zf.open(info) as s, open(target, "xb") as d:
                     while chunk := s.read(1 << 20):
+                        written += len(chunk)
+                        total_written += len(chunk)
+                        if written > MAX_ENTRY_BYTES or total_written > MAX_TOTAL_BYTES:
+                            raise OSError("Melebihi batas ekstraksi aman (zip-bomb)")
                         d.write(chunk)
-                files.append(target)
-            except (OSError, zipfile.BadZipFile) as e:
+                if is_pdf:
+                    files.append(target)
+            except (OSError, zipfile.BadZipFile, RuntimeError) as e:
+                target.unlink(missing_ok=True)
                 logging.warning("Gagal ekstrak %s: %s", name, e)
                 skipped.append(name)
-    return files, skipped
+    stats = ArchiveStats(zp.name, zp.stat().st_size if zp.exists() else 0, len(files), len(skipped))
+    return files, skipped, stats
 
 
 def _rel(folder: Path, base: Path) -> str:
@@ -36,9 +67,9 @@ def _rel(folder: Path, base: Path) -> str:
     return "" if r == "." else r
 
 
-def collect(paths, tmp_root) -> tuple[list[tuple[Path, str, bool]], list[str]]:
-    """ZIP / folder / PDF -> ([(pdf, subfolder relatif, dari_zip)], [dilewati])."""
-    out, skipped = [], []
+def collect(paths, tmp_root) -> tuple[list[tuple[Path, str, bool]], list[str], list[ArchiveStats]]:
+    """ZIP / folder / PDF -> ([(pdf, subfolder relatif, dari_zip)], [dilewati], [info_zip])."""
+    out, skipped, archives = [], [], []
     for p in map(Path, paths):
         from_zip = False
         if p.is_dir():
@@ -46,8 +77,9 @@ def collect(paths, tmp_root) -> tuple[list[tuple[Path, str, bool]], list[str]]:
         elif p.suffix.lower() == ".zip":
             base, from_zip = Path(tempfile.mkdtemp(dir=tmp_root)).resolve(), True
             try:
-                files, bad = extract_zip(p, base)
-            except zipfile.BadZipFile:
+                files, bad, st = extract_zip(p, base)
+                archives.append(st)
+            except (zipfile.BadZipFile, OSError):
                 files, bad = [], [p.name]
             skipped += bad
         elif p.suffix.lower() == ".pdf" and p.is_file():
@@ -56,7 +88,7 @@ def collect(paths, tmp_root) -> tuple[list[tuple[Path, str, bool]], list[str]]:
             skipped.append(p.name)
             continue
         out += [(f, _rel(f.parent, base), from_zip) for f in files]
-    return out, skipped
+    return out, skipped, archives
 
 
 def write_zip(entries, target, progress=None) -> None:
@@ -70,6 +102,5 @@ def write_zip(entries, target, progress=None) -> None:
                 if progress:
                     progress(i, len(entries))
     except BaseException:
-        Path(target).unlink(missing_ok=True)  # hanya ZIP buatan kita sendiri
+        Path(target).unlink(missing_ok=True)
         raise
-
