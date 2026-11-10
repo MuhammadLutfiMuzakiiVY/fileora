@@ -300,6 +300,60 @@ class TestFiles(unittest.TestCase):
         renamer.undo(log)
         self.assertFalse((self.dir / "out").exists())
 
+    def test_multi_format_docx_doc_rtf_odt_dan_gambar(self):
+        from PIL import Image
+        lines = ["Yth.", "Pimpinan", "PT MULTI FORMAT JAYA", "NPP : 88776655"]
+
+        # 1. .docx (Office Open XML)
+        docx_path = self.dir / "surat.docx"
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        body = "".join(f"<w:p><w:r><w:t>{ln}</w:t></w:r></w:p>" for ln in lines)
+        with zipfile.ZipFile(docx_path, "w") as zf:
+            zf.writestr("word/document.xml", f'<w:document xmlns:w="{w_ns}"><w:body>{body}</w:body></w:document>')
+
+        # 2. .odt (OpenDocument Text)
+        odt_path = self.dir / "surat.odt"
+        t_ns = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+        o_ns = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+        obody = "".join(f"<text:p>{ln}</text:p>" for ln in lines)
+        with zipfile.ZipFile(odt_path, "w") as zf:
+            zf.writestr("content.xml", f'<office:document-content xmlns:office="{o_ns}" xmlns:text="{t_ns}"><office:body><office:text>{obody}</office:text></office:body></office:document-content>')
+
+        # 3. .rtf (Rich Text Format)
+        rtf_path = self.dir / "surat.rtf"
+        rtf_body = r"\par ".join(lines)
+        rtf_path.write_text(r"{\rtf1\ansi{\fonttbl{\f0 Arial;}}\f0\fs22 " + rtf_body + "}", encoding="latin-1")
+
+        # 4. .doc (Microsoft Word 97-2003 binary OLE2 header + UTF-16LE text stream)
+        doc_path = self.dir / "surat.doc"
+        ole_header = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + (b"\x00" * 512)
+        utf16_stream = "\r\n".join(lines).encode("utf-16le")
+        doc_path.write_bytes(ole_header + utf16_stream + (b"\x00" * 128))
+
+        # 5. Gambar (.jpg, .jpeg, .png, .tiff, .tif, .bmp)
+        img_paths = []
+        for ext, fmt in ((".jpg", "JPEG"), (".jpeg", "JPEG"), (".png", "PNG"),
+                         (".tiff", "TIFF"), (".tif", "TIFF"), (".bmp", "BMP")):
+            ip = self.dir / f"scan{ext}"
+            Image.new("RGB", (64, 32), "white").save(ip, format=fmt)
+            img_paths.append(ip)
+
+        # Kemas seluruh format ke dalam satu ZIP dan uji ekstraksi + rename
+        mix_zip = self.dir / "semua_format.zip"
+        all_inputs = [docx_path, odt_path, rtf_path, doc_path, *img_paths]
+        zip_handler.write_zip(((f, f.name) for f in all_inputs), mix_zip)
+
+        found, skipped, arch = zip_handler.collect([mix_zip], self.dir)
+        self.assertEqual((len(found), skipped, arch[0].pdf_count), (10, [], 10))
+        items = [Item(p, rel, in_zip) for p, rel, in_zip in found]
+        with patch("fileora.extractor._ocr_image", return_value=["\n".join(lines)]):
+            extractor.extract_batch(items, ocr=True)
+        renamer.plan(items, NPP_FIRST)
+        by_ext = {it.src.suffix.lower(): it.new_name for it in items}
+        for ext in (".docx", ".odt", ".rtf", ".doc", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"):
+            self.assertTrue(by_ext[ext].startswith("88776655_Pt-Multi-Format-Jaya"), f"Gagal pada {ext}: {by_ext[ext]}")
+            self.assertTrue(by_ext[ext].endswith(ext), f"Ekstensi berubah pada {ext}: {by_ext[ext]}")
+
 
 if __name__ == "__main__":
     unittest.main()

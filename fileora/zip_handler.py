@@ -1,11 +1,13 @@
-"""Input ZIP/folder/PDF dan output ZIP. Ekstraksi aman dari zip-slip dan zip-bomb."""
+"""Input ZIP/folder/dokumen dan output ZIP. Ekstraksi aman dari zip-slip dan zip-bomb."""
 import logging
 import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-MAX_ENTRY_BYTES = 200 * (1 << 20)   # 200 MB per PDF
+from fileora.extractor import SUPPORTED_EXTS
+
+MAX_ENTRY_BYTES = 200 * (1 << 20)   # 200 MB per file
 MAX_TOTAL_BYTES = 2048 * (1 << 20)  # 2 GB total ekstraksi
 MAX_RATIO = 100                     # rasio kompresi maks (anti zip-bomb)
 
@@ -18,8 +20,12 @@ class ArchiveStats:
     skipped_count: int
 
 
+def is_supported(path_or_name: str | Path) -> bool:
+    return Path(path_or_name).suffix.lower() in SUPPORTED_EXTS
+
+
 def extract_zip(zip_path, dest, include_other: bool = False) -> tuple[list[Path], list[str], ArchiveStats]:
-    """Ekstrak PDF dari zip_path ke dest dengan validasi integritas, anti zip-slip, dan anti zip-bomb."""
+    """Ekstrak dokumen yang didukung dari zip_path ke dest (anti zip-slip & anti zip-bomb)."""
     zp = Path(zip_path)
     dest = Path(dest).resolve()
     files, skipped = [], []
@@ -29,8 +35,8 @@ def extract_zip(zip_path, dest, include_other: bool = False) -> tuple[list[Path]
             name = info.filename
             if info.is_dir() or "__MACOSX" in name:
                 continue
-            is_pdf = name.lower().endswith(".pdf")
-            if not is_pdf and not include_other:
+            supported = is_supported(name)
+            if not supported and not include_other:
                 continue
             target = (dest / name).resolve()
             if not target.is_relative_to(dest):  # zip-slip: ../ atau path absolut
@@ -52,7 +58,7 @@ def extract_zip(zip_path, dest, include_other: bool = False) -> tuple[list[Path]
                         if written > MAX_ENTRY_BYTES or total_written > MAX_TOTAL_BYTES:
                             raise OSError("Melebihi batas ekstraksi aman (zip-bomb)")
                         d.write(chunk)
-                if is_pdf:
+                if supported:
                     files.append(target)
             except (OSError, zipfile.BadZipFile, RuntimeError) as e:
                 target.unlink(missing_ok=True)
@@ -68,12 +74,12 @@ def _rel(folder: Path, base: Path) -> str:
 
 
 def collect(paths, tmp_root) -> tuple[list[tuple[Path, str, bool]], list[str], list[ArchiveStats]]:
-    """ZIP / folder / PDF -> ([(pdf, subfolder relatif, dari_zip)], [dilewati], [info_zip])."""
+    """ZIP / folder / dokumen -> ([(file, subfolder relatif, dari_zip)], [dilewati], [info_zip])."""
     out, skipped, archives = [], [], []
     for p in map(Path, paths):
         from_zip = False
         if p.is_dir():
-            base, files = p, sorted(f for f in p.rglob("*") if f.suffix.lower() == ".pdf" and f.is_file())
+            base, files = p, sorted(f for f in p.rglob("*") if is_supported(f) and f.is_file())
         elif p.suffix.lower() == ".zip":
             base, from_zip = Path(tempfile.mkdtemp(dir=tmp_root)).resolve(), True
             try:
@@ -82,7 +88,7 @@ def collect(paths, tmp_root) -> tuple[list[tuple[Path, str, bool]], list[str], l
             except (zipfile.BadZipFile, OSError):
                 files, bad = [], [p.name]
             skipped += bad
-        elif p.suffix.lower() == ".pdf" and p.is_file():
+        elif is_supported(p) and p.is_file():
             base, files = p.parent, [p]
         else:
             skipped.append(p.name)

@@ -1,6 +1,20 @@
-# Fileora — Rename PDF Otomatis Berdasarkan Isi
+# Fileora — Rename Dokumen Otomatis Berdasarkan Isi
 
-Aplikasi desktop Windows (100% offline) untuk me-rename ratusan file PDF sekaligus berdasarkan teks di dalam PDF.
+Aplikasi desktop Windows (100% offline) untuk me-rename ratusan hingga ribuan file dokumen/surat sekaligus berdasarkan teks di dalam dokumen.
+
+## Format File yang Didukung
+
+| Format | Keterangan |
+| :--- | :--- |
+| `.pdf` | Surat PDF |
+| `.doc` | Surat Microsoft Word lama |
+| `.docx` | Surat Microsoft Word |
+| `.rtf` | Rich Text Format |
+| `.odt` | OpenDocument Text |
+| `.jpg` / `.jpeg` | Foto atau scan surat |
+| `.png` | Scan surat |
+| `.tiff` / `.tif` | Dokumen hasil scan |
+| `.bmp` | Gambar surat |
 
 ## 1. Menjalankan dari Kode Sumber
 

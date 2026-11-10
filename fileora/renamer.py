@@ -56,11 +56,11 @@ def template_fields(preset) -> list[str]:
     return re.findall(r"{(\w+)}", preset.template)
 
 
-def build_stem(values: dict[str, str], preset) -> tuple[str, bool]:
+def build_stem(values: dict[str, str], preset, ext: str = EXT) -> tuple[str, bool]:
     """Return (nama tanpa ekstensi, dipotong?). Jika kepanjangan, field terpanjang yang dipotong."""
     tpl = preset.template.replace("}_{", "}" + preset.separator + "{")
     vals = {k: format_val(v, preset) for k, v in values.items()}
-    room = preset.max_len - len(EXT)
+    room = preset.max_len - len(ext or EXT)
     stem = sanitize(tpl.format_map(vals))
     if len(stem) <= room:
         return stem, False
@@ -70,12 +70,18 @@ def build_stem(values: dict[str, str], preset) -> tuple[str, bool]:
 
 
 def _propose(it: Item, preset) -> str | None:
+    ext = it.src.suffix or EXT
     it.status, it.notes, it.values, it.confidence = OK, [], {}, 100
     notes, missing = [], []
     if it.pages:
         it.values, notes, missing = extract_fields(it.pages, preset.sources)
-    manual = sanitize(it.manual[:-len(EXT)] if it.manual.lower().endswith(EXT) else it.manual)
-    manual = manual[:preset.max_len - len(EXT)].rstrip(_TRIM)
+    raw_manual = it.manual
+    if raw_manual:
+        for sfx in (ext, EXT):
+            if sfx and raw_manual.lower().endswith(sfx.lower()):
+                raw_manual = raw_manual[:-len(sfx)]
+                break
+    manual = sanitize(raw_manual)[:preset.max_len - len(ext)].rstrip(_TRIM)
     if manual:
         it.notes = [*notes, "Nama diedit manual"]
         it.confidence = 100
@@ -97,7 +103,7 @@ def _propose(it: Item, preset) -> str | None:
             it.confidence = min(it.confidence, 60)
     if notes:  # sumber berbeda antar halaman
         it.confidence = min(it.confidence, 80)
-    stem, cut = build_stem(it.values, preset)
+    stem, cut = build_stem(it.values, preset, ext=ext)
     if cut:
         it.notes.append(f"Nama dipotong (maks {preset.max_len} karakter)")
         it.confidence = min(it.confidence, 85)
@@ -110,6 +116,7 @@ def _propose(it: Item, preset) -> str | None:
 
 
 def _unique(stem: str, taken: set[str], max_len: int, ext: str = EXT) -> tuple[str, bool]:
+    ext = ext or EXT
     name, n = stem + ext, 1
     while name.lower() in taken:
         n += 1
@@ -137,10 +144,10 @@ def plan(items: list[Item], preset, inplace: bool = False) -> None:
     npp_counts = Counter(it.values.get("npp", "").upper() for it in items if it.values.get("npp"))
     for it, stem in zip(items, stems):
         if stem is None:
-            it.new_name, _ = _unique(it.src.stem, taken.setdefault(key(it), set()), 10**6, it.src.suffix)
+            it.new_name, _ = _unique(it.src.stem, taken.setdefault(key(it), set()), 10**6, it.src.suffix or EXT)
     for it, stem in zip(items, stems):
         if stem is not None:
-            it.new_name, dup = _unique(stem, taken.setdefault(key(it), set()), preset.max_len)
+            it.new_name, dup = _unique(stem, taken.setdefault(key(it), set()), preset.max_len, it.src.suffix or EXT)
             npp = it.values.get("npp", "").upper()
             if dup:
                 it.status = WARN

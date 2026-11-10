@@ -23,6 +23,9 @@ COLORS = {OK: "#2e7d32", WARN: "#f9a825", FAIL: "#c62828"}
 OUT_MODES = {"zip": "ZIP baru", "folder": "Folder baru", "inplace": "Rename di tempat"}
 CASES = {"asis": "Apa adanya", "upper": "HURUF BESAR", "lower": "huruf kecil", "title": "Title Case"}
 SPACES = {" ": "Pertahankan spasi ( )", "-": "Ganti strip (-)", "_": "Ganti garis bawah (_)"}
+FILE_FILTER = ("Semua Dokumen (*.zip *.pdf *.doc *.docx *.rtf *.odt *.jpg *.jpeg *.png *.tiff *.tif *.bmp);;"
+               "Arsip & PDF (*.zip *.pdf);;Word / RTF / ODT (*.doc *.docx *.rtf *.odt);;"
+               "Gambar Scan (*.jpg *.jpeg *.png *.tiff *.tif *.bmp)")
 
 
 def resource(rel: str) -> str:
@@ -137,7 +140,7 @@ class LearnDialog(QDialog):
         self.text.setPlainText("".join(parts))
 
     def open_pdf(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Pilih PDF contoh", "", "PDF (*.pdf)")
+        path, _ = QFileDialog.getOpenFileName(self, "Pilih dokumen contoh", "", FILE_FILTER)
         if path:
             try:
                 self.show_pages(extractor.extract_pages(path, self.ocr))
@@ -363,8 +366,8 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget()
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        hint = QLabel("Tarik & lepas file ZIP (hingga 100MB+ / 1.000+ PDF), PDF, atau folder ke sini\n"
-                      "atau klik “Tambah ZIP/PDF…”", alignment=Qt.AlignCenter)
+        hint = QLabel("Tarik & lepas file ZIP, PDF, Word (.doc/.docx), RTF, ODT, Gambar Scan (.jpg/.png/.tiff/.bmp),\n"
+                      "atau folder ke sini — atau klik “Tambah ZIP/PDF…”", alignment=Qt.AlignCenter)
         hint.setFont(QFont(hint.font().family(), 14))
         self.stack = QStackedWidget()
         self.stack.addWidget(hint)
@@ -424,7 +427,7 @@ class MainWindow(QMainWindow):
         self.load_paths([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()])
 
     def pick_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Pilih ZIP / PDF", "", "ZIP atau PDF (*.zip *.pdf)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Pilih ZIP / Dokumen / Gambar", "", FILE_FILTER)
         self.load_paths(paths)
 
     def pick_dir(self):
