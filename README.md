@@ -1,5 +1,7 @@
 # Fileora — Rename Dokumen Otomatis Berdasarkan Isi
 
+**Publisher / Author:** Muhammad Lutfi Muzaki
+
 Aplikasi desktop Windows (100% offline) untuk me-rename ratusan hingga ribuan file dokumen/surat sekaligus berdasarkan teks di dalam dokumen.
 
 ## Format File yang Didukung
@@ -32,7 +34,7 @@ Menjalankan unit test:
 ## 2. Build Menjadi `Fileora.exe` (Tanpa Perlu Python)
 
 ```powershell
-.\.venv\Scripts\pyinstaller --noconfirm --clean --onefile --windowed --name Fileora --icon assets\fileora.ico --add-data "assets;assets" --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick --exclude-module PySide6.Qt3DCore --exclude-module PySide6.QtMultimedia --exclude-module onnxruntime --exclude-module pymupdf4llm --exclude-module pymupdf_layout main.py
+.\.venv\Scripts\pyinstaller --noconfirm --clean --onefile --windowed --name Fileora --icon assets\fileora.ico --version-file version_info.txt --add-data "assets;assets" --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick --exclude-module PySide6.Qt3DCore --exclude-module PySide6.QtMultimedia --exclude-module onnxruntime --exclude-module pymupdf4llm --exclude-module pymupdf_layout main.py
 ```
 File hasil build tersedia di `dist\Fileora.exe`. Untuk membuat installer Windows (`dist\Fileora_Setup.exe`), buka `installer.iss` dengan **Inno Setup** lalu klik **Compile** (atau jalankan `ISCC.exe installer.iss`).
 

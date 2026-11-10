@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QStackedWidget,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from fileora import __version__, extractor, logger, presets, renamer, zip_handler
+from fileora import __publisher__, __version__, extractor, logger, presets, renamer, zip_handler
 from fileora.renamer import FAIL, OK, WARN, Item
 from fileora.rules import MODES, Source, extract_fields, find, learn_source
 
@@ -377,7 +377,7 @@ class MainWindow(QMainWindow):
             self.mode.addItem(v, k)
         run_btn, undo_btn, report = QPushButton("Rename Semua"), QPushButton("Undo"), QPushButton("Ekspor Laporan…")
         run_btn.setStyleSheet("font-weight: bold; padding: 4px 16px;")
-        self.progress, self.status = QProgressBar(), QLabel("100% berjalan lokal/offline.")
+        self.progress, self.status = QProgressBar(), QLabel(f"100% lokal/offline · Publisher: {__publisher__}")
         self.busy_widgets = [add_files, add_dir, clear, self.preset_box, rules_btn, hist_btn, self.ocr, self.mode,
                              run_btn, undo_btn, report, self.table]
 
@@ -699,6 +699,9 @@ class MainWindow(QMainWindow):
 def main():
     logger.setup()
     app = QApplication(sys.argv)
+    app.setApplicationName("Fileora")
+    app.setApplicationVersion(__version__)
+    app.setOrganizationName(__publisher__)
     app.setStyle("Fusion")
     app.setWindowIcon(QIcon(resource("assets/fileora.ico")))
     w = MainWindow()
