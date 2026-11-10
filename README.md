@@ -31,12 +31,26 @@ Menjalankan unit test:
 .\.venv\Scripts\python -m unittest -v
 ```
 
-## 2. Build Menjadi `Fileora.exe` (Tanpa Perlu Python)
+## 2. Format Paket Rilis & Distribusi
+
+Seluruh paket rilis tersedia di folder `dist\` dan GitHub Releases (dibuat otomatis oleh `build_release.py`):
+
+| Format | Nama File | Fungsi | Prioritas |
+| :--- | :--- | :--- | :--- |
+| `.exe` | `Fileora-1.0.0-Setup.exe` | Windows installer (membuat shortcut Desktop, Start Menu & Uninstaller) | **Wajib** |
+| `.zip` | `Fileora-1.0.0-Portable.zip` | Portable version tanpa instalasi | **Wajib** |
+| `.msi` | `Fileora-1.0.0-Setup.msi` | Windows Installer Package (WiX MSI x64) | **Disarankan** |
+| `.7z` | `Fileora-1.0.0-Portable.7z` | Portable archive ukuran lebih kecil (LZMA2) | **Opsional** |
+| `.sha256` | `Fileora-1.0.0.sha256` | Verifikasi integritas seluruh file rilis | **Wajib** |
+| `.sig` | `Fileora-1.0.0.sig` | Verifikasi tanda tangan digital (`RSA-3072-PSS-SHA256` + X.509 Publisher Cert) | **Opsional** |
+| `.blockmap` | `Fileora-1.0.0.blockmap` | Differential update blockmap (64 KB block SHA-256) | **Opsional** |
+
+### Build Menjadi `Fileora.exe` & Seluruh Paket Distribusi
 
 ```powershell
 .\.venv\Scripts\pyinstaller --noconfirm --clean --onefile --windowed --name Fileora --icon assets\fileora.ico --version-file version_info.txt --add-data "assets;assets" --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick --exclude-module PySide6.Qt3DCore --exclude-module PySide6.QtMultimedia --exclude-module onnxruntime --exclude-module pymupdf4llm --exclude-module pymupdf_layout main.py
+.\.venv\Scripts\python build_release.py
 ```
-File hasil build tersedia di `dist\Fileora.exe`. Untuk membuat installer Windows (`dist\Fileora_Setup.exe`), buka `installer.iss` dengan **Inno Setup** lalu klik **Compile** (atau jalankan `ISCC.exe installer.iss`).
 
 ## 3. Instalasi OCR (Opsional, Hanya untuk PDF Hasil Scan)
 
